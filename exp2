@@ -1,0 +1,190 @@
+import jax
+import jax.numpy as jnp
+from flax import linen as nn
+from flax.training import train_state
+import optax
+import numpy as np
+from sklearn.model_selection import train_test_split
+from typing import Any
+
+# Check JAX devices
+print(f"JAX devices: {jax.devices()}")
+print(f"Default backend: {jax.default_backend()}")
+
+# Data prep
+def prepare_data(batch_size=4096):
+    data = np.loadtxt('cardio_train.csv', delimiter=',', skiprows=1)
+    X = data[:, 1:-1]
+    y = data[:, -1]
+
+    # Normalize
+    X = (X - np.mean(X, axis=0)) / np.std(X, axis=0)
+
+    X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
+
+    # Convert to JAX arrays
+    X_train = jnp.array(X_train, dtype=jnp.float32)
+    y_train = jnp.array(y_train, dtype=jnp.float32).reshape(-1, 1)
+    X_test = jnp.array(X_test, dtype=jnp.float32)
+    y_test = jnp.array(y_test, dtype=jnp.float32).reshape(-1, 1)
+
+    return X_train, X_test, y_train, y_test, batch_size
+
+
+# Define model using Flax
+class NeuralNetwork(nn.Module):
+    @nn.compact
+    def __call__(self, x):
+        x = nn.Dense(64)(x)
+        x = nn.relu(x)
+        x = nn.Dense(32)(x)
+        x = nn.relu(x)
+        x = nn.Dense(1)(x)
+        x = nn.sigmoid(x)
+        return x
+
+
+# Loss function
+def binary_cross_entropy_loss(logits, labels):
+    return -jnp.mean(labels * jnp.log(logits + 1e-7) + (1 - labels) * jnp.log(1 - logits + 1e-7))
+
+
+# Create train state
+def create_train_state(rng, learning_rate, input_dim):
+    model = NeuralNetwork()
+    params = model.init(rng, jnp.ones([1, input_dim]))['params']
+    
+    # Exponential decay schedule
+    schedule = optax.exponential_decay(
+        init_value=learning_rate,
+        transition_steps=1000,
+        decay_rate=0.96
+    )
+    
+    # Adam optimizer with gradient clipping
+    tx = optax.chain(
+        optax.clip_by_global_norm(1.0),
+        optax.adam(schedule)
+    )
+    
+    return train_state.TrainState.create(
+        apply_fn=model.apply,
+        params=params,
+        tx=tx
+    )
+
+
+# Training step (JIT compiled for speed)
+@jax.jit
+def train_step(state, batch_X, batch_y):
+    def loss_fn(params):
+        logits = state.apply_fn({'params': params}, batch_X)
+        loss = binary_cross_entropy_loss(logits, batch_y)
+        return loss, logits
+    
+    grad_fn = jax.value_and_grad(loss_fn, has_aux=True)
+    (loss, logits), grads = grad_fn(state.params)
+    state = state.apply_gradients(grads=grads)
+    
+    # Calculate accuracy
+    preds = (logits >= 0.5).astype(jnp.float32)
+    accuracy = jnp.mean(preds == batch_y)
+    
+    return state, loss, accuracy
+
+
+# Evaluation (JIT compiled)
+@jax.jit
+def eval_model(state, X, y):
+    logits = state.apply_fn({'params': state.params}, X)
+    preds = (logits >= 0.5).astype(jnp.float32)
+    accuracy = jnp.mean(preds == y)
+    loss = binary_cross_entropy_loss(logits, y)
+    return accuracy, loss
+
+
+# Batch generator
+def batch_generator(X, y, batch_size, rng_key):
+    n_samples = X.shape[0]
+    indices = jax.random.permutation(rng_key, n_samples)
+    
+    for i in range(0, n_samples, batch_size):
+        batch_indices = indices[i:min(i + batch_size, n_samples)]
+        yield X[batch_indices], y[batch_indices]
+
+
+# Training loop
+def train_model(state, X_train, y_train, X_test, y_test, batch_size, epochs=100000):
+    best_loss = float('inf')
+    patience_counter = 0
+    patience = 500
+    
+    rng = jax.random.PRNGKey(0)
+    
+    for epoch in range(epochs):
+        rng, subkey = jax.random.split(rng)
+        
+        epoch_loss = 0.0
+        epoch_acc = 0.0
+        n_batches = 0
+        
+        # Train on batches
+        for batch_X, batch_y in batch_generator(X_train, y_train, batch_size, subkey):
+            state, loss, acc = train_step(state, batch_X, batch_y)
+            epoch_loss += loss
+            epoch_acc += acc
+            n_batches += 1
+        
+        avg_loss = epoch_loss / n_batches
+        avg_acc = epoch_acc / n_batches
+        
+        # Early stopping
+        if avg_loss < best_loss:
+            best_loss = avg_loss
+            patience_counter = 0
+        else:
+            patience_counter += 1
+        
+        if patience_counter >= patience:
+            print(f"Early stopping at epoch {epoch}")
+            break
+        
+        # Print progress
+        if epoch % 10 == 0:
+            test_acc, test_loss = eval_model(state, X_test, y_test)
+            print(f"Epoch {epoch:5d} | Train Loss: {avg_loss:.4f} | Train Acc: {avg_acc*100:.2f}% | "
+                  f"Test Loss: {test_loss:.4f} | Test Acc: {test_acc*100:.2f}%")
+    
+    return state
+
+
+# Main execution
+if __name__ == "__main__":
+    # Prepare data
+    X_train, X_test, y_train, y_test, batch_size = prepare_data(batch_size=4096)
+    
+    print(f"Training samples: {X_train.shape[0]}")
+    print(f"Test samples: {X_test.shape[0]}")
+    print(f"Batch size: {batch_size}")
+    print(f"Batches per epoch: {X_train.shape[0] // batch_size}\n")
+    
+    # Initialize model
+    rng = jax.random.PRNGKey(42)
+    state = create_train_state(rng, learning_rate=0.001, input_dim=X_train.shape[1])
+    
+    # Train
+    print("Starting training...\n")
+    state = train_model(state, X_train, y_train, X_test, y_test, batch_size, epochs=100000)
+    
+    # Final evaluation
+    test_acc, test_loss = eval_model(state, X_test, y_test)
+    print(f"\n{'='*60}")
+    print(f"Final Test Accuracy: {test_acc*100:.2f}%")
+    print(f"Final Test Loss: {test_loss:.4f}")
+    print(f"{'='*60}")
+    
+    # Save model
+    import pickle
+    with open('model_params.pkl', 'wb') as f:
+        pickle.dump(state.params, f)
+    print("\nModel saved to model_params.pkl")
