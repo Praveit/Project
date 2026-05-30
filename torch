@@ -8,11 +8,11 @@ from torch.optim.lr_scheduler import ReduceLROnPlateau
 
 # Data prep
 def prepare_data():
-    data = np.loadtxt('cardio_train.csv', delimiter=',', skiprows=1)
-    X = data[:, 1:-1]  # Exclude the first column (ID) and last column (target)
+    data = np.loadtxt('cardio_train_cleaned.csv', delimiter=',', skiprows=1)
+    X = data[:, 1:-1]  # Exclude first column (ID) and last column (target)
     y = data[:, -1]    # Target column
 
-    X = (X - np.mean(X, axis=0)) / np.std(X, axis=0)  # Normalize the features
+    X = (X - np.mean(X, axis=0)) / np.std(X, axis=0)  # Normalize  features
 
     X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
 
@@ -44,7 +44,7 @@ class NeuralNetwork(nn.Module):
         return x
 
 # Training 
-def train_model(model, criterion, optimizer, X_train, y_train, epochs=10000):
+def train_model(model, criterion, optimizer, X_train, y_train, epochs=100):
     for epoch in range(epochs):
         model.train()
 
@@ -54,7 +54,7 @@ def train_model(model, criterion, optimizer, X_train, y_train, epochs=10000):
         loss.backward()
         optimizer.step()
 
-        if epoch % 100 == 0:
+        if epoch % 1 == 0:
             print(f"Epoch {epoch}, Loss: {loss.item():.4f}")
 
 # Main 
@@ -64,7 +64,7 @@ input_size = X_train.shape[1]
 model = NeuralNetwork(input_size)
 
 criterion = nn.BCELoss()
-optimizer = torch.optim.Adam(model.parameters(), lr=0.0001)
+optimizer = torch.optim.Adam(model.parameters(), lr=0.000001)
 train_model(model, criterion, optimizer, X_train, y_train, epochs=1000000)
 
 # Evaluating model
@@ -88,6 +88,8 @@ print("Saved");
     # preferably ADAM over root mean square propagation 
         #implemented with low starting lr
     # or adaptive gradient, I think it has too much of a decreasing rate
-# Also test array instead of importing from outside document but i/o isn't affecting performance much
+# Also test array instead of importing from outside document but i/o isn't affecting performance much, just initial load time which is negligible when dealing with a large number of training attempts
 # Also try another self evaluation function
+# Current function reaches max of 76.59% accuracy at around 800,000 epochs after which, the learning rate goes flat (achieved with lr of 0.0001)
+# Need to also test model on another dataset to ensure it sees correlation across multiple samples
 

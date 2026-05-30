@@ -1,0 +1,31 @@
+Summary of outlier analysis
+
+METHOD: baseline
+Rows: 70000
+Accuracy: 0.7121, ROC_AUC: 0.7761
+Top 5 positive correlations:
+  gluc: 0.0893
+  weight: 0.1817
+  cholesterol: 0.2211
+  age: 0.2382
+  cardio: 1.0000
+
+METHOD: iqr
+Rows: 38023
+Accuracy: 0.7328, ROC_AUC: 0.7937
+Top 5 positive correlations:
+  cardio: 1.0000
+  gluc: nan
+  smoke: nan
+  alco: nan
+  active: nan
+
+METHOD: zscore
+Rows: 55699
+Accuracy: 0.7248, ROC_AUC: 0.7890
+Top 5 positive correlations:
+  ap_lo: 0.3134
+  ap_hi: 0.3980
+  cardio: 1.0000
+  smoke: nan
+  alco: nan

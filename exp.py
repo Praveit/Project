@@ -5,20 +5,18 @@ from torch.utils.data import TensorDataset, DataLoader
 from sklearn.model_selection import train_test_split
 import numpy as np
 
-# Enable optimizations for RTX cards
-torch.backends.cuda.matmul.allow_tf32 = True
-torch.backends.cudnn.allow_tf32 = True
-torch.backends.cudnn.benchmark = True
-
-device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-print(f"Using device: {device}")
-if torch.cuda.is_available():
-    print(f"GPU: {torch.cuda.get_device_name(0)}")
-    print(f"CUDA Version: {torch.version.cuda}")
-    print(f"GPU Memory: {torch.cuda.get_device_properties(0).total_memory / 1e9:.2f} GB")
+if torch.backends.mps.is_available():
+    device = torch.device("mps")
+    print("Using Apple Metal GPU (MPS)")
+elif torch.cuda.is_available():
+    device = torch.device("cuda")
+    print("Using NVIDIA CUDA GPU")
+else:
+    device = torch.device("cpu")
+    print("Using CPU")
 
 
-def prepare_data(batch_size=8192):
+def prepare_data(batch_size=4096):
     data = np.loadtxt('cardio_train.csv', delimiter=',', skiprows=1)
     X = data[:, 1:-1]
     y = data[:, -1]
@@ -36,8 +34,7 @@ def prepare_data(batch_size=8192):
         train_dataset,
         batch_size=batch_size,
         shuffle=True,
-        pin_memory=True,
-        num_workers=0
+        num_workers=0  
     )
 
     return train_loader, X_test, y_test
@@ -62,17 +59,6 @@ def train_model(model, criterion, optimizer, scheduler, train_loader, X_test, y_
     best_loss = float('inf')
     patience_counter = 0
     patience = 500
-    scaler = torch.amp.GradScaler('cuda')
-    
-    print("Starting training loop...")
-    print(f"Model is on: {next(model.parameters()).device}")
-    print(f"Test data is on: {X_test.device}")
-    
-    # Warm up GPU
-    for _ in range(3):
-        with torch.amp.autocast('cuda'):
-            _ = model(torch.randn(batch_size, X_test.shape[1], device=device))
-    torch.cuda.synchronize()
     
     import time
     start_time = time.time()
@@ -84,18 +70,14 @@ def train_model(model, criterion, optimizer, scheduler, train_loader, X_test, y_
         total = 0
         
         for batch_X, batch_y in train_loader:
-            batch_X = batch_X.to(device, non_blocking=True)
-            batch_y = batch_y.to(device, non_blocking=True)
+            batch_X = batch_X.to(device)
+            batch_y = batch_y.to(device)
             
-            optimizer.zero_grad(set_to_none=True)
-            
-            with torch.amp.autocast('cuda'):
-                outputs = model(batch_X)
-                loss = criterion(outputs, batch_y)
-            
-            scaler.scale(loss).backward()
-            scaler.step(optimizer)
-            scaler.update()
+            optimizer.zero_grad()
+            outputs = model(batch_X)
+            loss = criterion(outputs, batch_y)
+            loss.backward()
+            optimizer.step()
             
             epoch_loss += loss.item()
             preds = (torch.sigmoid(outputs) >= 0.5).float()
@@ -124,7 +106,7 @@ def train_model(model, criterion, optimizer, scheduler, train_loader, X_test, y_
         
         if epoch % 10 == 0:
             model.eval()
-            with torch.no_grad(), torch.amp.autocast('cuda'):
+            with torch.no_grad():
                 test_outputs = model(X_test)
                 test_preds = (torch.sigmoid(test_outputs) >= 0.5).float()
                 test_acc = (test_preds == y_test).sum().item() / y_test.size(0) * 100
@@ -133,16 +115,11 @@ def train_model(model, criterion, optimizer, scheduler, train_loader, X_test, y_
             epochs_per_sec = (epoch + 1) / elapsed if elapsed > 0 else 0
             
             print(f"Epoch {epoch:5d} | Loss: {avg_loss:.4f} | Train: {train_acc:.2f}% | "
-                  f"Test: {test_acc:.2f}% | LR: {new_lr:.6f} | Speed: {epochs_per_sec:.2f} epochs/sec")
-            
-            # Check GPU utilization
-            if epoch == 0:
-                print(f"GPU Memory Used: {torch.cuda.memory_allocated() / 1e9:.2f} GB")
-                print(f"GPU Memory Cached: {torch.cuda.memory_reserved() / 1e9:.2f} GB")
+                  f"Test: {test_acc:.2f}% | LR: {new_lr:.6f} | {epochs_per_sec:.1f} eps")
 
 
 # Main
-batch_size = 8192
+batch_size = 4096 
 train_loader, X_test, y_test = prepare_data(batch_size=batch_size)
 
 first_batch = next(iter(train_loader))
@@ -150,18 +127,14 @@ input_size = first_batch[0].shape[1]
 
 model = NeuralNetwork(input_size).to(device)
 
-print(f"\nModel architecture on {next(model.parameters()).device}:")
-print(model)
-print(f"\nRunning with mixed precision")
+print(f"\nBatch size: {batch_size}")
+print(f"Batches per epoch: {len(train_loader)}\n")
 
 criterion = nn.BCEWithLogitsLoss()
 optimizer = torch.optim.AdamW(model.parameters(), lr=0.001, weight_decay=0.01)
 scheduler = optim.lr_scheduler.ReduceLROnPlateau(
     optimizer, mode='min', factor=0.5, patience=50, min_lr=1e-7
 )
-
-print(f"Batch size: {batch_size}")
-print(f"Batches per epoch: {len(train_loader)}\n")
 
 train_model(model, criterion, optimizer, scheduler, train_loader, X_test, y_test, epochs=100000)
 
